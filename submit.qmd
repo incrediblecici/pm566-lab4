@@ -1,28 +1,153 @@
 ---
-title: ""
-author: ""
+title: "PM566-lab4"
+author: "Weixi Pan"
 format:
   html:
     embed-resources: true
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
+Step1
 ```{r}
-1 + 1
+if (!file.exists("met_all.gz"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/02_met/met_all.gz",
+    destfile = "met_all.gz",
+    method   = "libcurl",
+    timeout  = 60
+    )
+met <- data.table::fread("met_all.gz")
 ```
 
-You can add options to executable code like this
-
+Step2
 ```{r}
-#| echo: false
-2 * 2
+library(lubridate)
+#Remove temperatures less than -17C
+met <- met[met$temp > -17][elev == 9999.0, elev := NA]
+#Generate a date variable using the functions as.Date()
+met$date <- as.Date(paste(met$year, met$month, met$day, sep = "-"))
+#Using the data.table::week function, keep the observations of the first week of the month.
+met[,table(week(date))]
+met <- met[week(date)==31]
+```
+```{r}
+library(dplyr)
+library(tidyverse)
+#Compute the mean by station of the variables temp, rh, wind.sp, vis.dist, dew.point, lat, lon, and elev.
+met_avg <- met[,.(
+  temp     = mean(temp,na.rm=TRUE),
+  rh       = mean(rh,na.rm=TRUE),
+  wind.sp  = mean(wind.sp,na.rm=TRUE),
+  vis.dist = mean(vis.dist,na.rm=TRUE),
+  dew.point= mean(dew.point,na.rm=TRUE),
+  lat      = mean(lat),
+  lon      = mean(lon), 
+  elev     = mean(elev,na.rm=TRUE)
+), by=c("USAFID")]
+```
+```{r}
+library(data.table)
+#Create a region variable for NW, SW, NE, SE based on lon = -98.00 and lat = 39.71 degrees
+met_avg[,region := fifelse(lon >= -98 & lat > 39.71,"NE",
+              fifelse(lon < -98 & lat > 39.71,"NW",
+              fifelse(lon < -98 & lat <= 39.71,"SW", "SE")))]
+
+table(met_avg$region)
+```
+```{r}
+#Create a categorical variable for elevation as in the lecture slides
+met_avg[, elev_cat := fifelse(elev > 252, "high", "low")]
+```
+
+step3
+```{r}
+library(ggplot2)
+#Try using geom_violin instead
+met_avg[!is.na(elev_cat)] %>% 
+  ggplot()+
+  geom_violin(mapping=aes(x=elev_cat, y=temp, fill=elev_cat))
+  facet_wrap(~elev_cat, nrow=1)
+```
+The result shows that the median temperature in high elev is lower than the low elev.
+
+Step4
+```{r}
+#Use geom_jitter with stat_smooth to examine the association between dew point and wind speed by region
+met_avg[!is.na(region)]%>%
+  ggplot()+
+  geom_jitter(mapping=aes(x=dew.point, y=wind.sp, fill=region))+
+  geom_smooth(mapping = aes(x = dew.point, y = wind.sp, linetype = region))
+```
+Except the north east area, wind speed of most areas stays same when dew point change.
+
+step5
+```{r}
+#Use geom_bar to create barplots of the weather stations by elevation category colored by region
+met_avg[!is.na(elev_cat) & elev_cat != "clear"] %>%
+  ggplot() + 
+  geom_bar(mapping = aes(x = elev_cat, fill = region), position = "dodge")+
+   scale_fill_brewer(palette= "Blues")+
+   labs( x= "Elevation Category", y= "Number of Stations", title = "Weather Station")+
+  theme_bw(base_family = "Times")
+```
+In high elevation area, the weather station build mostly in northeast place (around 1250), and northwest place holds the least (no over 750). In low elevation area, the weather station build mostly in southeast place (around 2500), and northwest place holds the least (no over 100). 
+
+Step6
+```{r}
+#Use stat_summary to examine mean dew point and wind speed by region with standard deviation error bars
+
+#1.dew point
+met_avg[!is.na(dew.point)] %>%
+  ggplot() + 
+    stat_summary( mapping = aes(y = dew.point, x = region), fun.data="mean_sdl", geom = "errorbar")
+```
+Dew point is wilder range in northwest and southwest area.
+```{r}
+#2.wind speed
+met_avg[!is.na(wind.sp)] %>%
+  ggplot() + 
+    stat_summary( mapping = aes(y = wind.sp, x = region), fun.data="mean_sdl", geom = "errorbar")
+```
+Wind speed is almost same in 4 regions.
+
+step7
+```{r}
+#Make a map showing the spatial trend in relative humidity in the US
+library(leaflet)
+met_avg <- met_avg[!is.na(rh)]
+
+# Generating a color palette
+rh.pal <- colorNumeric(c('darkgreen','goldenrod','brown'), domain=met_avg$rh)
+rh.pal
+
+top10rh <-  met_avg[rank(-rh)<=10]
+
+rhmap <- leaflet(met_avg) %>%  
+  # The looks of the Map
+  addProviderTiles('CartoDB.Positron') %>% 
+  # Some circles
+  addCircles(
+    lat = ~lat, lng=~lon,
+                                                  # HERE IS OUR PAL!
+    label = ~paste0(rh), color = ~ rh.pal(rh),
+    opacity = 1, fillOpacity = 1, radius = 500
+    ) %>%
+  # And a pretty legend
+  addLegend('bottomleft', pal=rh.pal, values=met_avg$rh,
+          title='Relative Humidity', opacity=1)
+rhmap <- addMarkers(rhmap, data=top10rh, lng=~lon, lat=~lat,label = ~rh)
+rhmap
+```
+The humidity increases from west to east in the US. And a number of high humidity cities are located in the north place.
+
+Step8
+```{r}
+# Use a ggplot extension
+library(ggforce)
+#> Loading required package: ggplot2
+ggplot(met_avg, aes(rh, temp, colour = region)) +
+  geom_point() +
+  facet_zoom(x = region == "versicolor")
+
 ```
 
 The `echo: false` option disables the printing of code (only output is displayed).
